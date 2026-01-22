@@ -3,7 +3,11 @@
 package inputunifi
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -33,33 +37,44 @@ type InputUnifi struct {
 	Logger     poller.Logger
 }
 
+// DiscoveredConsole represents a console discovered via Site Manager API
+type DiscoveredConsole struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
 // Controller represents the configuration for a UniFi Controller.
 // Each polled controller may have its own configuration.
 type Controller struct {
-	VerifySSL               *bool         `json:"verify_ssl"                 toml:"verify_ssl"                 xml:"verify_ssl"                 yaml:"verify_ssl"`
-	SaveAnomal              *bool         `json:"save_anomalies"             toml:"save_anomalies"             xml:"save_anomalies"             yaml:"save_anomalies"`
-	SaveAlarms              *bool         `json:"save_alarms"                toml:"save_alarms"                xml:"save_alarms"                yaml:"save_alarms"`
-	SaveEvents              *bool         `json:"save_events"                toml:"save_events"                xml:"save_events"                yaml:"save_events"`
-	SaveSyslog              *bool         `json:"save_syslog"                toml:"save_syslog"                xml:"save_syslog"                yaml:"save_syslog"`
-	SaveProtectLogs         *bool         `json:"save_protect_logs"          toml:"save_protect_logs"          xml:"save_protect_logs"          yaml:"save_protect_logs"`
-	ProtectThumbnails       *bool         `json:"protect_thumbnails"         toml:"protect_thumbnails"         xml:"protect_thumbnails"         yaml:"protect_thumbnails"`
-	SaveIDs                 *bool         `json:"save_ids"                   toml:"save_ids"                   xml:"save_ids"                   yaml:"save_ids"`
-	SaveDPI                 *bool         `json:"save_dpi"                   toml:"save_dpi"                   xml:"save_dpi"                   yaml:"save_dpi"`
-	SaveTraffic             *bool         `json:"save_traffic"               toml:"save_traffic"               xml:"save_traffic"               yaml:"save_traffic"`
-	SaveRogue               *bool         `json:"save_rogue"                 toml:"save_rogue"                 xml:"save_rogue"                 yaml:"save_rogue"`
-	HashPII                 *bool         `json:"hash_pii"                   toml:"hash_pii"                   xml:"hash_pii"                   yaml:"hash_pii"`
-	DropPII                 *bool         `json:"drop_pii"                   toml:"drop_pii"                   xml:"drop_pii"                   yaml:"drop_pii"`
-	SaveSites               *bool         `json:"save_sites"                 toml:"save_sites"                 xml:"save_sites"                 yaml:"save_sites"`
-	Timeout                 cnfg.Duration `json:"timeout"                    toml:"timeout"                    xml:"timeout"                    yaml:"timeout"`
-	CertPaths               []string      `json:"ssl_cert_paths"             toml:"ssl_cert_paths"             xml:"ssl_cert_path"              yaml:"ssl_cert_paths"`
-	User                    string        `json:"user"                       toml:"user"                       xml:"user"                       yaml:"user"`
-	Pass                    string        `json:"pass"                       toml:"pass"                       xml:"pass"                       yaml:"pass"`
-	APIKey                  string        `json:"api_key"                    toml:"api_key"                    xml:"api_key"                    yaml:"api_key"`
-	URL                     string        `json:"url"                        toml:"url"                        xml:"url"                        yaml:"url"`
-	Sites                   []string      `json:"sites"                      toml:"sites"                      xml:"site"                       yaml:"sites"`
-	DefaultSiteNameOverride string        `json:"default_site_name_override" toml:"default_site_name_override" xml:"default_site_name_override" yaml:"default_site_name_override"`
-	Unifi                   *unifi.Unifi  `json:"-"                          toml:"-"                          xml:"-"                          yaml:"-"`
-	ID                      string        `json:"id,omitempty"` // this is an output, not an input.
+	VerifySSL               *bool              `json:"verify_ssl"                 toml:"verify_ssl"                 xml:"verify_ssl"                 yaml:"verify_ssl"`
+	SaveAnomal              *bool              `json:"save_anomalies"             toml:"save_anomalies"             xml:"save_anomalies"             yaml:"save_anomalies"`
+	SaveAlarms              *bool              `json:"save_alarms"                toml:"save_alarms"                xml:"save_alarms"                yaml:"save_alarms"`
+	SaveEvents              *bool              `json:"save_events"                toml:"save_events"                xml:"save_events"                yaml:"save_events"`
+	SaveSyslog              *bool              `json:"save_syslog"                toml:"save_syslog"                xml:"save_syslog"                yaml:"save_syslog"`
+	SaveProtectLogs         *bool              `json:"save_protect_logs"          toml:"save_protect_logs"          xml:"save_protect_logs"          yaml:"save_protect_logs"`
+	ProtectThumbnails       *bool              `json:"protect_thumbnails"         toml:"protect_thumbnails"         xml:"protect_thumbnails"         yaml:"protect_thumbnails"`
+	SaveIDs                 *bool              `json:"save_ids"                   toml:"save_ids"                   xml:"save_ids"                   yaml:"save_ids"`
+	SaveDPI                 *bool              `json:"save_dpi"                   toml:"save_dpi"                   xml:"save_dpi"                   yaml:"save_dpi"`
+	SaveTraffic             *bool              `json:"save_traffic"               toml:"save_traffic"               xml:"save_traffic"               yaml:"save_traffic"`
+	SaveRogue               *bool              `json:"save_rogue"                 toml:"save_rogue"                 xml:"save_rogue"                 yaml:"save_rogue"`
+	HashPII                 *bool              `json:"hash_pii"                   toml:"hash_pii"                   xml:"hash_pii"                   yaml:"hash_pii"`
+	DropPII                 *bool              `json:"drop_pii"                   toml:"drop_pii"                   xml:"drop_pii"                   yaml:"drop_pii"`
+	SaveSites               *bool              `json:"save_sites"                 toml:"save_sites"                 xml:"save_sites"                 yaml:"save_sites"`
+	Timeout                 cnfg.Duration      `json:"timeout"                    toml:"timeout"                    xml:"timeout"                    yaml:"timeout"`
+	CertPaths               []string           `json:"ssl_cert_paths"             toml:"ssl_cert_paths"             xml:"ssl_cert_path"              yaml:"ssl_cert_paths"`
+	User                    string             `json:"user"                       toml:"user"                       xml:"user"                       yaml:"user"`
+	Pass                    string             `json:"pass"                       toml:"pass"                       xml:"pass"                       yaml:"pass"`
+	APIKey                  string             `json:"api_key"                    toml:"api_key"                    xml:"api_key"                    yaml:"api_key"`
+	URL                     string             `json:"url"                        toml:"url"                        xml:"url"                        yaml:"url"`
+	Sites                   []string           `json:"sites"                      toml:"sites"                      xml:"site"                       yaml:"sites"`
+	DefaultSiteNameOverride string             `json:"default_site_name_override" toml:"default_site_name_override" xml:"default_site_name_override" yaml:"default_site_name_override"`
+	Remote                  *bool              `json:"remote"                     toml:"remote"                     xml:"remote"                     yaml:"remote"`
+	ConsoleID               string             `json:"console_id"                 toml:"console_id"                 xml:"console_id"                 yaml:"console_id"`
+	SiteManagerAPIKey       string             `json:"site_manager_api_key"       toml:"site_manager_api_key"      xml:"site_manager_api_key"       yaml:"site_manager_api_key"`
+	RemoteAPIBaseURL        string             `json:"remote_api_base_url"        toml:"remote_api_base_url"        xml:"remote_api_base_url"        yaml:"remote_api_base_url"`
+	DiscoveredConsoles      []*DiscoveredConsole `json:"-" toml:"-" xml:"-" yaml:"-"` // Runtime: discovered consoles
+	Unifi                   *unifi.Unifi       `json:"-"                          toml:"-"                          xml:"-"                          yaml:"-"`
+	ID                      string             `json:"id,omitempty"` // this is an output, not an input.
 }
 
 // Config contains our configuration data.
@@ -116,6 +131,57 @@ func (c *Controller) getCerts() ([][]byte, error) {
 	return b, nil
 }
 
+// discoverConsoles discovers all available consoles via Site Manager API
+func (u *InputUnifi) discoverConsoles(c *Controller) ([]*DiscoveredConsole, error) {
+	baseURL := c.RemoteAPIBaseURL
+	if baseURL == "" {
+		baseURL = "https://api.ui.com/v1"
+	}
+
+	apiKey := c.SiteManagerAPIKey
+	if apiKey == "" {
+		apiKey = c.APIKey
+	}
+
+	if apiKey == "" {
+		return nil, fmt.Errorf("site_manager_api_key or api_key required for console discovery")
+	}
+
+	// GET /v1/consoles - discover all consoles
+	endpoint := baseURL + "/consoles"
+
+	req, err := http.NewRequest("GET", endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("X-API-Key", apiKey)
+
+	client := &http.Client{
+		Timeout: c.Timeout.Duration,
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(body))
+	}
+
+	var consoles []*DiscoveredConsole
+	if err := json.NewDecoder(resp.Body).Decode(&consoles); err != nil {
+		return nil, fmt.Errorf("decoding response: %w", err)
+	}
+
+	u.Logf("Discovered %d console(s) via Site Manager API", len(consoles))
+	return consoles, nil
+}
+
 // getUnifi (re-)authenticates to a unifi controller.
 // If certificate files are provided, they are re-read.
 func (u *InputUnifi) getUnifi(c *Controller) error {
@@ -131,12 +197,56 @@ func (u *InputUnifi) getUnifi(c *Controller) error {
 		return err
 	}
 
+	// Construct the base URL based on remote/local mode
+	baseURL := c.URL
+	apiKey := c.APIKey
+
+	if c.Remote != nil && *c.Remote {
+		// Remote mode: https://api.ui.com/v1/connector/consoles/{consoleId}/proxy/network/integration/v1
+		consoleID := c.ConsoleID
+
+		// If no console_id but we have discovered consoles, use the first one
+		if consoleID == "" && len(c.DiscoveredConsoles) > 0 {
+			consoleID = c.DiscoveredConsoles[0].ID
+			c.ConsoleID = consoleID
+			u.Logf("Using discovered console: %s (%s)", consoleID, c.DiscoveredConsoles[0].Name)
+		}
+
+		if consoleID == "" {
+			return fmt.Errorf("remote mode requires console_id or automatic console discovery")
+		}
+
+		remoteBase := c.RemoteAPIBaseURL
+		if remoteBase == "" {
+			remoteBase = "https://api.ui.com/v1"
+		}
+		baseURL = fmt.Sprintf("%s/connector/consoles/%s/proxy/network/integration/v1",
+			remoteBase, consoleID)
+
+		// Use Site Manager API key for remote mode
+		if c.SiteManagerAPIKey != "" {
+			apiKey = c.SiteManagerAPIKey
+		}
+		if apiKey == "" {
+			return fmt.Errorf("remote mode requires site_manager_api_key or api_key")
+		}
+		// Clear user/pass for remote mode - only API key is used
+		c.User = ""
+		c.Pass = ""
+	} else {
+		// Local mode: https://{controller-ip}/proxy/network/integration/v1
+		baseURL = strings.TrimSuffix(c.URL, "/")
+		if !strings.HasSuffix(baseURL, "/proxy/network/integration/v1") {
+			baseURL = baseURL + "/proxy/network/integration/v1"
+		}
+	}
+
 	// Create an authenticated session to the Unifi Controller.
 	c.Unifi, err = unifi.NewUnifi(&unifi.Config{
 		User:      c.User,
 		Pass:      c.Pass,
-		APIKey:    c.APIKey,
-		URL:       c.URL,
+		APIKey:    apiKey,
+		URL:       baseURL,
 		SSLCert:   certs,
 		VerifySSL: *c.VerifySSL,
 		Timeout:   c.Timeout.Duration,
@@ -149,7 +259,7 @@ func (u *InputUnifi) getUnifi(c *Controller) error {
 		return fmt.Errorf("unifi controller: %w", err)
 	}
 
-	u.LogDebugf("Authenticated with controller successfully, %s", c.URL)
+	u.LogDebugf("Authenticated with controller successfully, %s", baseURL)
 
 	return nil
 }
@@ -281,8 +391,27 @@ func (u *InputUnifi) setDefaults(c *Controller) { //nolint:cyclop
 		c.SaveTraffic = &f
 	}
 
+	if c.Remote == nil {
+		c.Remote = &f
+	}
+
+	if c.RemoteAPIBaseURL == "" {
+		c.RemoteAPIBaseURL = "https://api.ui.com/v1"
+	}
+
 	if c.URL == "" {
 		c.URL = defaultURL
+	}
+
+	// When remote is enabled, ensure we have API key
+	if *c.Remote {
+		if c.SiteManagerAPIKey == "" {
+			if strings.HasPrefix(c.APIKey, "file://") {
+				c.SiteManagerAPIKey = u.getPassFromFile(strings.TrimPrefix(c.APIKey, "file://"))
+			} else if c.APIKey != "" {
+				c.SiteManagerAPIKey = c.APIKey
+			}
+		}
 	}
 
 	if strings.HasPrefix(c.Pass, "file://") {
@@ -380,6 +509,22 @@ func (u *InputUnifi) setControllerDefaults(c *Controller) *Controller { //nolint
 		c.SaveAnomal = u.Default.SaveAnomal
 	}
 
+	if c.Remote == nil {
+		c.Remote = u.Default.Remote
+	}
+
+	if c.RemoteAPIBaseURL == "" {
+		c.RemoteAPIBaseURL = u.Default.RemoteAPIBaseURL
+	}
+
+	if c.ConsoleID == "" {
+		c.ConsoleID = u.Default.ConsoleID
+	}
+
+	if c.SiteManagerAPIKey == "" {
+		c.SiteManagerAPIKey = u.Default.SiteManagerAPIKey
+	}
+
 	if c.URL == "" {
 		c.URL = u.Default.URL
 	}
@@ -392,7 +537,25 @@ func (u *InputUnifi) setControllerDefaults(c *Controller) *Controller { //nolint
 		c.APIKey = u.getPassFromFile(strings.TrimPrefix(c.APIKey, "file://"))
 	}
 
-	if c.APIKey == "" {
+	if strings.HasPrefix(c.SiteManagerAPIKey, "file://") {
+		c.SiteManagerAPIKey = u.getPassFromFile(strings.TrimPrefix(c.SiteManagerAPIKey, "file://"))
+	}
+
+	// Handle API key for remote mode
+	if c.Remote != nil && *c.Remote {
+		if c.SiteManagerAPIKey == "" {
+			if strings.HasPrefix(c.APIKey, "file://") {
+				c.SiteManagerAPIKey = u.getPassFromFile(strings.TrimPrefix(c.APIKey, "file://"))
+			} else if c.APIKey != "" {
+				c.SiteManagerAPIKey = c.APIKey
+			}
+		}
+		// For remote mode, always use API key, clear user/pass
+		if c.SiteManagerAPIKey != "" {
+			c.User = ""
+			c.Pass = ""
+		}
+	} else if c.APIKey == "" {
 		if c.Pass == "" {
 			c.Pass = defaultPass
 		}
