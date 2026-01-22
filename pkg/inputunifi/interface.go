@@ -34,6 +34,45 @@ func (u *InputUnifi) Initialize(l poller.Logger) error {
 		u.Controllers = []*Controller{&u.Default}
 	}
 
+	// Handle automatic console discovery for remote mode
+	expandedControllers := []*Controller{}
+	for _, c := range u.Controllers {
+		c = u.setControllerDefaults(c)
+
+		// If remote mode is enabled and no console_id is set, discover consoles
+		if c.Remote != nil && *c.Remote && c.ConsoleID == "" {
+			u.Logf("Remote mode enabled without console_id - discovering consoles automatically...")
+
+			consoles, err := u.discoverConsoles(c)
+			if err != nil {
+				u.LogErrorf("Failed to discover consoles: %v", err)
+				// Keep the original controller even if discovery fails
+				expandedControllers = append(expandedControllers, c)
+				continue
+			}
+
+			c.DiscoveredConsoles = consoles
+
+			// Create a controller entry for each discovered console
+			for _, console := range consoles {
+				consoleController := &Controller{}
+				// Copy all settings from the original controller
+				*consoleController = *c
+				consoleController.ConsoleID = console.ID
+				consoleController.ID = "" // Reset ID so it gets regenerated
+				expandedControllers = append(expandedControllers, consoleController)
+			}
+
+			u.Logf("Discovered %d console(s), created controller entries for each", len(consoles))
+		} else {
+			// Keep the original controller
+			expandedControllers = append(expandedControllers, c)
+		}
+	}
+
+	// Replace controllers list with expanded list
+	u.Controllers = expandedControllers
+
 	if len(u.Controllers) == 0 {
 		u.Logf("No controllers configured. Polling dynamic controllers only! Defaults:")
 		u.logController(&u.Default)
@@ -116,6 +155,16 @@ func (u *InputUnifi) DebugInput() (bool, error) {
 func (u *InputUnifi) logController(c *Controller) {
 	u.Logf("   => URL: %s (verify SSL: %v, timeout: %v)", c.URL, *c.VerifySSL, c.Timeout.Duration)
 
+	if c.Remote != nil && *c.Remote {
+		u.Logf("   => Remote Mode: enabled")
+		if c.ConsoleID != "" {
+			u.Logf("   => Console ID: %s", c.ConsoleID)
+		}
+		if len(c.DiscoveredConsoles) > 0 {
+			u.Logf("   => Discovered Consoles: %d", len(c.DiscoveredConsoles))
+		}
+	}
+
 	if len(c.CertPaths) > 0 {
 		u.Logf("   => Cert Files: %s", strings.Join(c.CertPaths, ", "))
 	}
@@ -124,7 +173,11 @@ func (u *InputUnifi) logController(c *Controller) {
 		u.Logf("   => Version: %s (%s)", c.Unifi.ServerVersion, c.Unifi.UUID)
 	}
 
-	u.Logf("   => Username: %s (has password: %v) (has api-key: %v)", c.User, c.Pass != "", c.APIKey != "")
+	if c.Remote != nil && *c.Remote {
+		u.Logf("   => Site Manager API Key: %v", c.SiteManagerAPIKey != "")
+	} else {
+		u.Logf("   => Username: %s (has password: %v) (has api-key: %v)", c.User, c.Pass != "", c.APIKey != "")
+	}
 	u.Logf("   => Hash PII %v / Drop PII %v / Poll Sites: %s", *c.HashPII, *c.DropPII, strings.Join(c.Sites, ", "))
 	u.Logf("   => Save Sites %v / Save DPI %v (metrics)", *c.SaveSites, *c.SaveDPI)
 	u.Logf("   => Save Events %v / Save Syslog %v / Save IDs %v (logs)", *c.SaveEvents, *c.SaveSyslog, *c.SaveIDs)
