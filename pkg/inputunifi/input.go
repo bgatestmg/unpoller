@@ -197,7 +197,7 @@ func (u *InputUnifi) getUnifi(c *Controller) error {
 	}
 
 	// Construct the base URL based on remote/local mode
-	baseURL := c.URL
+	var baseURL string
 	apiKey := c.APIKey
 
 	if c.Remote != nil && *c.Remote {
